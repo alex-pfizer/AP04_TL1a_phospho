@@ -1,0 +1,503 @@
+---
+title: "TL1a vs. TNFa Phosphoproteomics"
+author: "Alex Panov"
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+    toc: true
+    toc-depth: 4
+    df-print: paged
+editor: visual
+execute: 
+  warning: false
+---
+
+1\. Data Loading, Wrangling (same as before)
+
+```{r}
+## AP04_TL1a AP
+
+setwd("~/Library/CloudStorage/OneDrive-Pfizer/projects/AP04_TL1a_phospho")
+df_control <- read.table("./tl1a/output/tl1a_tnfa_followup/tl1a_tnfa_phosphoproteomics_dea.txt", sep = "\t", na.strings = c("NULL", "NaN", "NA"), header = T)
+# df_compare <- read.table("./tl1a/output/tl1a_tnfa_followup/tl1a_tnfa_phosphoproteomics_dea_tl1a_vs_tnfa.txt", sep = "\t", na.strings = c("NULL", "NaN", "NA"), header = T)
+
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(ggrepel)
+library(stringr)
+library(cowplot)
+# library(UniProt.ws)
+
+## Some notes about the experiment. 50 ng/mL and 100 ng/mL TNFa, which is 1.95 nM and 3.9 nM, respectively. We want to compare 20 and 200 nM TL1a to 50 ng TNFa, or tla1_high and tl1a_med vs. tnfa_low
+
+## let's add the normalized values before LogFC for later plots.
+df_control$norm_ratio_control <- 2^(df_control$logfc)
+
+## reshape to long format for ggplot
+df_control_corr <- df_control[,c("id", "id_prot", "gene_symbol", "ptm_sites", "contrast","logfc", "norm_ratio_control","logfc_se", "pval", "padj", "t")]
+df_control_corr <- reshape(df_control_corr, idvar = c("id"), timevar = "contrast", direction = "wide")
+
+df_control_corr <- df_control_corr[,c("id", "id_prot.tl1a_000_2nM", "gene_symbol.tl1a_000_2nM", "ptm_sites.tl1a_000_2nM", "logfc.tl1a_000_2nM","norm_ratio_control.tl1a_000_2nM", "logfc_se.tl1a_000_2nM", "pval.tl1a_000_2nM", "padj.tl1a_000_2nM", "t.tl1a_000_2nM",  "logfc.tl1a_020nM", "norm_ratio_control.tl1a_020nM","logfc_se.tl1a_020nM", "pval.tl1a_020nM", "padj.tl1a_020nM", "t.tl1a_020nM",  "logfc.tl1a_200nM", "norm_ratio_control.tl1a_200nM","logfc_se.tl1a_200nM", "pval.tl1a_200nM", "padj.tl1a_200nM", "t.tl1a_200nM",  "logfc.tnfa_050_ng_ml", "norm_ratio_control.tnfa_050_ng_ml","logfc_se.tnfa_050_ng_ml", "pval.tnfa_050_ng_ml", "padj.tnfa_050_ng_ml", "t.tnfa_050_ng_ml", "logfc.tnfa_100_ng_ml", "norm_ratio_control.tnfa_100_ng_ml", "logfc_se.tnfa_100_ng_ml", "pval.tnfa_100_ng_ml", "padj.tnfa_100_ng_ml", "t.tnfa_100_ng_ml")]
+
+
+## norm_ratio_control cols are the treatment/control fold-change. So now we need to take Tl1A norm_ratio_control over TNFa norm_ratio_control
+## adding in norm_ratio_control_med and _high
+df_control_corr$norm_ratio_med <- df_control_corr$norm_ratio_control.tl1a_020nM/df_control_corr$norm_ratio_control.tnfa_050_ng_ml
+df_control_corr$norm_ratio_high <- df_control_corr$norm_ratio_control.tl1a_200nM/df_control_corr$norm_ratio_control.tnfa_050_ng_ml
+## THESE are the ratios we care about
+## Let's also make a little less abstracted by making the ratios <1 into "negative" fold changes
+# df_control$norm_ratio_control <- ifelse(df_control$norm_ratio_control < 1, -(1/df_control$norm_ratio_control), df_control$norm_ratio_control)
+df_control_corr$norm_ratio_med_abs <- ifelse(df_control_corr$norm_ratio_med < 1, -(1/df_control_corr$norm_ratio_med), df_control_corr$norm_ratio_med)
+df_control_corr$norm_ratio_high_abs <- ifelse(df_control_corr$norm_ratio_high < 1, -(1/df_control_corr$norm_ratio_high), df_control_corr$norm_ratio_high)
+
+
+## add a significance threshold
+alpha <- 0.05
+df_control_corr$significance_med <- ifelse(df_control_corr$padj.tl1a_020nM < alpha & df_control_corr$padj.tnfa_050_ng_ml < alpha, "yes", "no")
+df_control_corr$significance_high <- ifelse(df_control_corr$padj.tl1a_200nM < alpha & df_control_corr$padj.tnfa_050_ng_ml < alpha, "yes", "no")
+
+## add significance thresholds for colors in plots below based on norm_ratio_med_abs and norm_ratio_high_abs. Let's start strictly with 2 fold change in either direction.
+## ratio of 2 leaves maybe 1 single site. Let's drop to 50%? 25%?!
+fc_cutoff <- 1.25
+## required: fc_cutoff, alpha level, AND the ratio sign must agree with the logfc. For example: if we see an increase in a TL1a site after treatment compared to control, if the ratio is also positive, this means that the TL1a stimulates the site that much more as compared to TNFa. If the ratio is negative, it means TNFa stimualtes the site more. 
+df_control_corr$fc_cutoff_med <- ifelse(abs(df_control_corr$norm_ratio_med_abs) > fc_cutoff & df_control_corr$padj.tl1a_020nM < alpha & sign(df_control_corr$logfc.tl1a_020nM)==sign(df_control_corr$norm_ratio_med_abs), "yes", "no" )
+df_control_corr$fc_cutoff_high <- ifelse(abs(df_control_corr$norm_ratio_high_abs) > fc_cutoff & df_control_corr$padj.tl1a_200nM < alpha & sign(df_control_corr$logfc.tl1a_200nM)==sign(df_control_corr$norm_ratio_high_abs), "yes", "no" )
+df_control_corr$fc_cutoff_both <- ifelse(df_control_corr$fc_cutoff_med == "yes" & df_control_corr$fc_cutoff_high == "yes", "yes", "no")
+```
+
+#### 3. Systematic analysis for TL1a-specific phosphosites
+
+A few custom requests:
+
+-   TL1a-specific candidate phosphorylation sites
+
+    -   Systematic approach is to use the ratio of fold-changes as compared to control for TL1a treatment and TNFa treatment, i.e. $ratio = \frac{Fold-change(\frac{TL1a}{control})}{Fold-change(\frac{TNFa}{control})}$. We want this ratio to be greater magnitude to determine TL1a-specific sites. (Note: The scale for this ratio exists between (-Inf, -1\] and \[1, Inf). For any ratios \< 1, the sign was changed to negative. This way, all ratios are more "symmetric" for interpret-ability).
+
+    -   For static plots with labels, please see accompanying slide deck (code below).
+
+    -   Criteria = Adj. pval TL1a \< alpha (0.05), Fold-change ratio of at least 25% (\> 1.25 or \< -1.25), and that the direction of Fold-change ratio and Fold-change of TL1a match.
+
+```{r}
+## 20 nM TL1a : 50 ng/mL TNFa
+control_corr_plot_med <- ggplot() +
+  geom_point(data = df_control_corr[df_control_corr$fc_cutoff_med=="no",], aes(x = logfc.tl1a_020nM, y = -log10(padj.tl1a_020nM),  text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_med_abs,2),
+    round(logfc.tl1a_020nM, 2),
+    round(-log10(padj.tl1a_020nM),2)
+    )), 
+    alpha = 0.5, shape = 1, color = "gray") +
+  geom_point(data = df_control_corr[df_control_corr$fc_cutoff_med=="yes",], aes(x = logfc.tl1a_020nM, y = -log10(padj.tl1a_020nM), color = norm_ratio_med_abs, text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_med_abs,2),
+    round(logfc.tl1a_020nM, 2),
+    round(-log10(padj.tl1a_020nM),2)
+    )), 
+    alpha = 1.0, shape = 16) +
+  scale_color_viridis_c(begin = 0.2, end = 0.8, option = "magma") +
+  # geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+  labs(color = "Ratio fold-changes \nTL1a (20 nM):\nTNFa (50 ng/mL)") +
+  xlab("Log2FC(TL1a/control)") +
+  ylab("-log10(pval)") +
+  ggtitle("Tl1a-specific phosphosite candidates (med)")
+
+ggplotly(control_corr_plot_med, tooltip = c("text"))
+
+
+## same plot for 200 nM TL1a
+control_corr_plot_high <- ggplot() +
+  geom_point(data = df_control_corr[df_control_corr$fc_cutoff_high=="no",], aes(x = logfc.tl1a_200nM, y = -log10(padj.tl1a_200nM),  text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_high_abs,2),
+    round(logfc.tl1a_200nM, 2),
+    round(-log10(padj.tl1a_200nM),2)
+    )), 
+    alpha = 0.5, shape = 1, color = "gray") +
+  geom_point(data = df_control_corr[df_control_corr$fc_cutoff_high=="yes",], aes(x = logfc.tl1a_200nM, y = -log10(padj.tl1a_200nM), color = norm_ratio_high_abs, text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_high_abs,2),
+    round(logfc.tl1a_200nM, 2),
+    round(-log10(padj.tl1a_200nM),2)
+    )), 
+    alpha = 1.0, shape = 16) +
+  scale_color_viridis_c(begin = 0.2, end = 0.8, option = "magma") +
+  # geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+  labs(color = "Ratio fold-changes \nTL1a (200 nM):\nTNFa (50 ng/mL)") +
+  xlab("Log2FC(TL1a/control)") +
+  ylab("-log10(pval)") +
+  ggtitle("Tl1a-specific phosphosite candidates (high)")
+
+ggplotly(control_corr_plot_high, tooltip = c("text"))
+
+
+## Static plots code here
+df_control_corr$sites <- gsub("\\|.*", "", df_control_corr$ptm_sites.tl1a_000_2nM)
+df_control_corr$sites <- gsub(".*_", "", df_control_corr$sites)
+
+df_control_corr$plot_label_med <- ifelse(df_control_corr$fc_cutoff_med == "yes", paste0(df_control_corr$gene_symbol.tl1a_000_2nM, "\n", df_control_corr$sites), NA)
+
+df_control_corr$plot_label_high <- ifelse(df_control_corr$fc_cutoff_high == "yes", paste0(df_control_corr$gene_symbol.tl1a_000_2nM, "\n", df_control_corr$sites), NA)
+
+df_control_corr$plot_label_med <- ifelse(df_control_corr$fc_cutoff_both=="yes", paste0(
+  df_control_corr$plot_label_med, "*"
+), df_control_corr$plot_label_med)
+df_control_corr$plot_label_high <- ifelse(df_control_corr$fc_cutoff_both=="yes", paste0(
+  df_control_corr$plot_label_high, "*"
+), df_control_corr$plot_label_high)
+# 
+# ## highlighting points of interest
+# ## 20 nM TL1a : 50 ng/mL TNFa
+# control_corr_plot_med_static <- ggplot() +
+#   geom_point(data = df_control_corr[df_control_corr$fc_cutoff_med=="no",], aes(x = logfc.tl1a_020nM, y = -log10(padj.tl1a_020nM)), 
+#     alpha = 0.5, shape = 1, color = "gray") +
+#   geom_point(data = df_control_corr[df_control_corr$fc_cutoff_med=="yes",], aes(x = logfc.tl1a_020nM, y = -log10(padj.tl1a_020nM), color = norm_ratio_med_abs, label = plot_label_med), alpha = 1.0, shape = 16) +
+#   scale_color_viridis_c(begin = 0.2, end = 0.8, option = "magma") +
+#   geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+#   labs(color = "Ratio fold-changes \nTL1a (20 nM):\nTNFa (50 ng/mL)") +
+#   xlab("Log2FC(TL1a/control)") +
+#   ylab("-log10(pval)") +
+#   ggtitle("Tl1a-specific phosphosite candidates (med)") +
+#   ggrepel::geom_label_repel(data = df_control_corr[df_control_corr$fc_cutoff_med=="yes",], aes(x = logfc.tl1a_020nM, y = -log10(padj.tl1a_020nM), color = norm_ratio_med_abs, label = plot_label_med), box.padding = 0.75, size = 2, max.overlaps = 35)
+# 
+# control_corr_plot_med_static
+# 
+# 
+# 
+# ## same plot for 200 nM TL1a
+# control_corr_plot_high_static <- ggplot() +
+#   geom_point(data = df_control_corr[df_control_corr$fc_cutoff_high=="no",], aes(x = logfc.tl1a_200nM, y = -log10(padj.tl1a_200nM)), 
+#     alpha = 0.5, shape = 1, color = "gray") +
+#   geom_point(data = df_control_corr[df_control_corr$fc_cutoff_high=="yes",], aes(x = logfc.tl1a_200nM, y = -log10(padj.tl1a_200nM), color = norm_ratio_high_abs, label = plot_label_high), alpha = 1.0, shape = 16) +
+#   scale_color_viridis_c(begin = 0.2, end = 0.8, option = "magma") +
+#   geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+#   labs(color = "Ratio fold-changes \nTL1a (200 nM):\nTNFa (50 ng/mL)") +
+#   xlab("Log2FC(TL1a/control)") +
+#   ylab("-log10(pval)") +
+#   ggtitle("Tl1a-specific phosphosite candidates (high)") +
+#   ggrepel::geom_label_repel(data = df_control_corr[df_control_corr$fc_cutoff_high=="yes",], aes(x = logfc.tl1a_200nM, y = -log10(padj.tl1a_200nM), color = norm_ratio_high_abs, label = plot_label_high), box.padding = 0.75, size = 2, max.overlaps = 35)
+# 
+# control_corr_plot_high_static
+
+```
+
+#### 4. Highlighting TNF pathway members
+
+-   TL1a phosphorylation sites, nonspecific
+
+    a\. also include TNF pathway column here (Using GO: 0033209 "tumor necrosis factor-mediated signaling pathway" and Homo sapiens in UniProt, list of 110 genes)
+
+-   Specific notes: No peptides from DR3/TNFRSF25 were captured in this experiment. TRAF1 p66 and p64, TRAF3 p9 and p29, and RIPK1 p389 and p25 were captured. The one that is changing the most is RIPK1 p25. Data table below shows all values for these specific sites.
+
+```{r}
+df_list1 <- df_control_corr[which(
+  df_control_corr$fc_cutoff_med=="yes"|df_control_corr$fc_cutoff_high=="yes"
+    ),]
+## we don't need all the columns
+df_list1 <- df_list1[ , -which(names(df_list1) %in% c("ratio_med", "ratio_high", "norm_ratio_med", "norm_ratio_high", "norm_ratio_control.tl1a_000_2nM", "norm_ratio_control.tl1a_020nM", "norm_ratio_control.tl1a_200nM", "norm_ratio_control.tnfa_050_ng_ml", "norm_ratio_control.tnfa_100_ng_ml", "significance_med", "significance_high", "sites", "plot_label_med", "plot_label_high"))]
+ names(df_list1)[which(grepl("id_prot|gene_symbol|ptm_sites", names(df_list1)))] <- gsub(".tl1a_000_2nM", "", names(df_list1)[which(grepl("id_prot|gene_symbol|ptm_sites", names(df_list1)))])
+ # write.csv(df_list1, "./TL1a_specific_sites.csv")
+ 
+ 
+ 
+ # library(UniProt.ws)
+# temp <- UniProt.ws::queryUniProt(query = c("organism_id:9606", "reviewed:true"), fields = c("accession", "id"), collapse = " AND ")
+
+## what is going on with this package? check later...
+# temp <- queryUniProt(
+# query = c("accession:A5YMT3"),
+# fields = c("accession", "id"),
+# collapse = ""
+# )
+# 
+# mapUniProt(
+# from = "Gene_Name",
+# to = "UniProtKB-Swiss-Prot",
+# columns = c("accession", "id"),
+# query = list(taxId = 9606, ids = 'TP53')
+# )
+
+## download the list manually, ugh
+
+tnf_uniprot <- read.table("uniprotkb_go_0033209_AND_model_organism_2024_10_16.tsv", sep = "\t", header = T, na.strings = c("NULL", "NaN", "NA", "null", "Null", "na"))
+
+df_control_corr$Entry <- gsub("-.*", "", df_control_corr$id_prot.tl1a_000_2nM)
+
+df_control_corr_up <- merge(df_control_corr, tnf_uniprot, all.x = T)
+df_control_corr_up$TNF_pathway <- ifelse(!is.na(df_control_corr_up$Entry.Name), "yes", "no")
+
+list_of_genes_bryce <- c("TNFRSF25", "TRADD", "FADD", "TRAF1","TRAF2", "TRAF3", "TRAF6", "RIPK1", "RIPK3", "CIAP", "ASK1", "CASP8", "TANK", "NEMO", "CYLD", "LUBAC")
+grep(paste0(list_of_genes_bryce, collapse = "|"), df_control_corr_up$Gene.Names)
+df_control_corr_up[grep(paste0(list_of_genes_bryce, collapse = "|"), df_control_corr_up$Gene.Names),]
+```
+
+```{r}
+control_corr_plot_med_tl1a <- ggplot() +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="no",], aes(x = logfc.tl1a_020nM, y = -log10(padj.tl1a_020nM),  text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_med_abs,2),
+    round(logfc.tl1a_020nM, 2),
+    round(-log10(padj.tl1a_020nM),2)
+  )), 
+  alpha = 0.5, shape = 1, color = "gray") +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="yes",], aes(x = logfc.tl1a_020nM, y = -log10(padj.tl1a_020nM), color = logfc.tl1a_020nM, text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_med_abs,2),
+    round(logfc.tl1a_020nM, 2),
+    round(-log10(padj.tl1a_020nM),2)
+  )), 
+  alpha = 1.0, shape = 16) +
+  scale_color_viridis_c(begin = 0.1, end = 0.9, option = "magma") +
+  # geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+  labs(color = "Log2FC(TL1a 20nM/control)") +
+  xlab("Log2FC(TL1a/control)") +
+  ylab("-log10(pval)") +
+  ggtitle("Tl1a phosphosites in TNF pathway") +
+  xlim(-2.75,2.75) +
+  ylim(0,12)
+
+ggplotly(control_corr_plot_med_tl1a, tooltip = c("text"))
+
+
+## same plot for 200 nM TL1a
+control_corr_plot_high_tl1a <- ggplot() +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="no",], aes(x = logfc.tl1a_200nM, y = -log10(padj.tl1a_200nM),  text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_high_abs,2),
+    round(logfc.tl1a_200nM, 2),
+    round(-log10(padj.tl1a_200nM),2)
+  )), 
+  alpha = 0.5, shape = 1, color = "gray") +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="yes",], aes(x = logfc.tl1a_200nM, y = -log10(padj.tl1a_200nM), color = logfc.tl1a_200nM, text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    round(norm_ratio_high_abs,2),
+    round(logfc.tl1a_200nM, 2),
+    round(-log10(padj.tl1a_200nM),2)
+  )), 
+  alpha = 1.0, shape = 16) +
+  scale_color_viridis_c(begin = 0.1, end = 0.9, option = "magma") +
+  # geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+  labs(color = "Log2FC(TL1a 200nM/control)") +
+  xlab("Log2FC(TL1a/control)") +
+  ylab("-log10(pval)") +
+  ggtitle("Tl1a phosphosites in TNF pathway")+
+  xlim(-2.75,2.75) +
+  ylim(0,12)
+
+ggplotly(control_corr_plot_high_tl1a, tooltip = c("text"))
+
+
+## same plot TNFa 50 ng/mL
+control_corr_plot_low_tnfa <- ggplot() +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="no",], aes(x = logfc.tnfa_050_ng_ml, y = -log10(padj.tnfa_050_ng_ml),  text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    "not calculated",
+    round(logfc.tnfa_050_ng_ml, 2),
+    round(-log10(padj.tnfa_050_ng_ml),2)
+  )), 
+  alpha = 0.5, shape = 1, color = "gray") +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="yes",], aes(x = logfc.tnfa_050_ng_ml, y = -log10(padj.tnfa_050_ng_ml), color = logfc.tnfa_050_ng_ml, text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    "not calculated",
+    round(logfc.tnfa_050_ng_ml, 2),
+    round(-log10(padj.tnfa_050_ng_ml),2)
+  )), 
+  alpha = 1.0, shape = 16) +
+  scale_color_viridis_c(begin = 0.1, end = 0.9, option = "magma") +
+  # geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+  labs(color = "Log2FC(TNFa 50 ng/mL/control)") +
+  xlab("Log2FC(TNFa/control)") +
+  ylab("-log10(pval)") +
+  ggtitle("TNFa phosphosites in TNF pathway")+
+  xlim(-2.75,2.75) +
+  ylim(0,12)
+
+ggplotly(control_corr_plot_low_tnfa, tooltip = c("text"))
+
+
+## same plot TNFa 100 ng/mL high
+control_corr_plot_high_tnfa <- ggplot() +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="no",], aes(x = logfc.tnfa_100_ng_ml, y = -log10(padj.tnfa_100_ng_ml),  text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    "not calculated",
+    round(logfc.tnfa_100_ng_ml, 2),
+    round(-log10(padj.tnfa_100_ng_ml),2)
+  )), 
+  alpha = 0.5, shape = 1, color = "gray") +
+  geom_point(data = df_control_corr_up[df_control_corr_up$TNF_pathway=="yes",], aes(x = logfc.tnfa_100_ng_ml, y = -log10(padj.tnfa_100_ng_ml), color = logfc.tnfa_100_ng_ml, text=sprintf(
+    "Protein: %s<br>Site: %s<br>Ratio: %s<br>LogFC: %s<br>-log10(pval): %s", 
+    gene_symbol.tl1a_000_2nM, 
+    ptm_sites.tl1a_000_2nM, 
+    "not calculated",
+    round(logfc.tnfa_100_ng_ml, 2),
+    round(-log10(padj.tnfa_100_ng_ml),2)
+  )), 
+  alpha = 1.0, shape = 16) +
+  scale_color_viridis_c(begin = 0.1, end = 0.9, option = "magma") +
+  # geom_hline(yintercept= -log10(alpha), linetype = "dashed", alpha = 0.2) +
+  labs(color = "Log2FC(TNFa 100 ng/mL/control)") +
+  xlab("Log2FC(TNFa/control)") +
+  ylab("-log10(pval)") +
+  ggtitle("TNFa phosphosites in TNF pathway")+
+  xlim(-2.75,2.75) +
+  ylim(0,12)
+
+ggplotly(control_corr_plot_high_tnfa, tooltip = c("text"))
+```
+
+Heatmap of all peptides of interest from the TNF pathway.
+
+```{r}
+tnf_uniprot_formerge <- tnf_uniprot
+names(tnf_uniprot_formerge)[which(names(tnf_uniprot_formerge) == "Entry")] <- "id_prot"
+## also add some additional custom protein names
+tnf_heatmap1 <- c("Q92844", "Q9NQC7", "Q00653", "Q96EP0")
+
+## interlude of sorting the list
+df_control_corr_top <- df_control_corr[which(df_control_corr$padj.tl1a_020nM < 0.05),]
+df_control_corr_top <- df_control_corr_top[order(-df_control_corr_top$logfc.tl1a_020nM),]
+## Bryce sent XIRP1 -- can't find here, ask
+## want the peptide ids so we don't grab all phosphopeptides from the protein with the single site of interest
+tnf_heatmap2 <- df_control_corr_top$id[1:31]
+df_control_TNF <- df_control[which(df_control$id_prot %in% tnf_uniprot$Entry | df_control$id_prot %in% tnf_heatmap1 | df_control$id %in% tnf_heatmap2),]
+
+## make heatmap categories for stratification
+## Why is RIPK1 in both lists?
+## because tnf_heatmap1 uses specific proteins and tnf_heatmap2 uses specific peptides
+df_control_TNF$Category <- ifelse(df_control_TNF$id_prot %in% tnf_uniprot$Entry | df_control_TNF$id_prot %in% tnf_heatmap1, "Known TNF pathway members", NA)
+df_control_TNF$Category <- ifelse(df_control_TNF$id %in% tnf_heatmap2, "Novel phosphosites", df_control_TNF$Category)
+
+## let's make a category for missing ptm_sites
+df_control_TNF$peptide_id <- substr(df_control_TNF$id, start = 8, stop = nchar(df_control_TNF$id))
+
+df_control_TNF$ptm_site_label <- gsub("\\|.*$","",df_control_TNF$ptm_sites)
+df_control_TNF$ptm_site_label <- gsub("^.*_", "", df_control_TNF$ptm_site_label)
+
+df_control_TNF$unique_id <- ifelse(!is.na(df_control_TNF$ptm_sites), 
+  paste0(df_control_TNF$gene_symbol, " ", df_control_TNF$ptm_site_label),
+  NA)
+df_control_TNF$unique_id <- ifelse(is.na(df_control_TNF$unique_id), 
+                                   paste0(df_control_TNF$gene_symbol, " ", df_control_TNF$peptide_id), df_control_TNF$unique_id )
+
+df_control_TNF$contrast[df_control_TNF$contrast=="tnfa_100_ng_ml"] <- "TNFA 100 ng/mL"
+df_control_TNF$contrast[df_control_TNF$contrast=="tnfa_050_ng_ml"] <- "TNFA 50 ng/mL"
+df_control_TNF$contrast[df_control_TNF$contrast=="tl1a_200nM"] <- "TL1A 200 nM"
+df_control_TNF$contrast[df_control_TNF$contrast=="tl1a_020nM"] <- "TL1A 20 nM"
+df_control_TNF$contrast[df_control_TNF$contrast=="tl1a_000_2nM"] <- "TL1A 0.2 nM"
+
+## Bryce request dropping the sites that were not assigned.
+df_control_TNF <- df_control_TNF[which(!is.na(df_control_TNF$ptm_sites)),]
+
+## facet wrap shows ALL sites, don't really want that so
+df_TNF1 <- df_control_TNF[which(df_control_TNF$Category=="Known TNF pathway members"),]
+df_TNF2 <- df_control_TNF[which(df_control_TNF$Category=="Novel phosphosites"),]
+
+length(unique(df_TNF1$unique_id))
+
+## what are the limits for these plots?
+summary(df_control_TNF$logfc)
+## -0.75 to 2.75
+  
+plot_heatmap1 <- ggplot(data = df_TNF1, aes(x = contrast, y = unique_id, fill = logfc)) +
+  geom_tile() +
+  scale_fill_viridis_c( option = "magma", limits = c(-0.75, 2.75)) +
+  theme_classic() +
+  # theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ## unit(c(top, right, bottom, left), units)
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank(), axis.text.x = element_blank(), legend.position = "none", plot.margin = unit(c(0,0, 1, 0), 'lines')) 
+  # xlab("Protein") +
+  # ylab("Condition compared\n to control") +
+plot_heatmap1
+
+
+plot_heatmap2 <- ggplot(data = df_TNF2, aes(x = contrast, y = unique_id, fill = logfc)) +
+  geom_tile() +
+  scale_fill_viridis_c( option = "magma", limits = c(-0.75, 2.75)) +
+  theme_classic() +
+   # theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), axis.title.x = element_blank(), axis.title.y = element_blank(), plot.margin = unit(c(0,0, 0, 0), 'lines')) 
+  # xlab("Protein") +
+  # ylab("Condition compared\n to control") 
+
+plot_list <- cowplot::align_plots(plot_heatmap1, plot_heatmap2, align = "v")
+
+cowplot::ggdraw(plot_list[[1]])
+cowplot::ggdraw(plot_list[[2]])
+
+heatmaps <- ggpubr::ggarrange(cowplot::ggdraw(plot_list[[1]]), cowplot::ggdraw(plot_list[[2]]), nrow =2, ncol = 1, common.legend = T, legend = "bottom" )
+
+annotate_figure(heatmaps, left = text_grob("Phosphosite", rot = 90, vjust = 1), bottom = text_grob("Condition") )
+
+# ggarrange(plot_heatmap1, plot_heatmap2,  nrow = 2, common.legend = F)
+
+
+# ggplot(data = df_control_TNF, aes(x = contrast, y = unique_id)) +
+#   geom_tile(mapping = aes(fill = logfc)) +
+#   scale_fill_viridis_c() +
+#   facet_grid(.~Category, scales = "free", as.table = F)
+```
+
+Add note that some peptides may have another peptide present in the dataset. This is mostly in case the same site was quantified differently (e.g. peptide SSTKERFGSPSSM is 2 fold up, but KERFGSPSSM is unchanging.
+
+Trying to find some sites that look good to highlight — there are not that many (8) that significant in the 20 nM and 200 nM conditions. Perhaps we just look at sites that are changing for the high condition? this brings the number of sites to 50%. See selection criteria above. Dropping below 25% seems too lenient for selection.
+
+```{r}
+## Picked FOXO4 and MCRIP2
+
+## read in normalized TMT ratios from Pierre
+df_control_tmt <- read.csv("tl1a_tnfa_phosphoproteomics_sample_data.csv",na.strings = c("NULL", "NaN", "NA"), header = T)
+## being lazy and using gene symbol
+barplot_picks <- c("P98177_KPSVLPAPPEGATPTSPVGHFAK_2701", "Q9BUT9_APSTSPSFEGTQETYTVAHEENVR_10513")
+
+df_control_tmt <- df_control_tmt[which(df_control_tmt$id %in% barplot_picks),]
+
+df_control_tmt$sample_condition[df_control_tmt$sample_condition=="tnfa_100_ng_ml"] <- "TNFA 100 ng/mL"
+df_control_tmt$sample_condition[df_control_tmt$sample_condition=="tnfa_050_ng_ml"] <- "TNFA 50 ng/mL"
+df_control_tmt$sample_condition[df_control_tmt$sample_condition=="tl1a_200nM"] <- "TL1A 200 nM"
+df_control_tmt$sample_condition[df_control_tmt$sample_condition=="tl1a_020nM"] <- "TL1A 20 nM"
+df_control_tmt$sample_condition[df_control_tmt$sample_condition=="tl1a_000.2nM"] <- "TL1A 0.2 nM"
+df_control_tmt$sample_condition[df_control_tmt$sample_condition=="control"] <- "Control"
+
+df_summary <- df_control_tmt %>%
+  group_by(sample_condition, gene_symbol) %>%
+  summarize(mean = mean(log2_tmt_ratio), sd = sd(log2_tmt_ratio), n = n(), se = sd(log2_tmt_ratio)/sqrt(length(log2_tmt_ratio)))
+# %>% mutate_if(is.numeric, round, digits = 2)
+
+goi <- "MCRIP2"
+ggplot() +
+  geom_col(data = df_summary[which(df_summary$gene_symbol==goi),], aes(x = sample_condition, y = mean, fill = sample_condition, color = sample_condition), alpha = 0.6) +
+    geom_hline(yintercept = 0, alpha = 0.8) +
+    geom_point(data = df_control_tmt[which(df_control_tmt$gene_symbol==goi),], aes(x = sample_condition, y = log2_tmt_ratio, group = sample_condition, color = sample_condition)) +
+  geom_errorbar(data = df_summary[which(df_summary$gene_symbol==goi),],aes(x = sample_condition, ymin = mean-se, ymax = mean+se), size = 0.5, width = 0.25)+
+  scale_fill_viridis_d(option = "magma", begin = 0.1, end = 0.8) +
+  scale_color_viridis_d(option = "magma", begin = 0.1, end = 0.8) +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks = element_blank()) +
+  ylab("Log2(TMT ratios)") +
+  labs(color = "Condition", fill = "Condition") +
+  ggtitle("MCRIP2 p82")
+```
