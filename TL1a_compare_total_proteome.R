@@ -106,7 +106,7 @@ df_annot$Condition <- gsub("-.*$", "", df_annot$Condition)
   ## Run the MSstats converter. "Master.Protein.Accessions" is used for "ProteinName". "Sequence" and "Modifications" are used for "PeptideSequence". "Charge"
   list_quant <- MSstatsPTM::PDtoMSstatsPTMFormat(input = df_raw_from_PDP, 
                                                  annotation = df_annot,
-                                                 fasta_path = "/Users/PANOVA02/Library/CloudStorage/OneDrive-Pfizer/projects/AP04_TL1a_phospho/NG_09062024_TL1A_TNFa_Proteome_24FX_[24].fasta",
+                                                 fasta_path = "NG_09062024_TL1A_TNFa_Proteome_24FX_[24].fasta",
                                                  labeling_type = "TMT",
                                                  which_proteinid = "Master.Protein.Accessions",
                                                  ## phospho is default, can omit if you want
@@ -131,7 +131,7 @@ df_annot$Condition <- gsub("-.*$", "", df_annot$Condition)
   # list_quant <- NULL
   ## need to hold onto the entire list_spectronaut_proposed for the groupComparison step later
   
-  save.image("./24_12_10_AP04_steve_total_proteome.RData")
+  # save.image("./24_12_10_AP04_steve_total_proteome.RData")
  
   dataProcessPlotsPTM(list_PD_proposed,
                       type = 'QCPLOT',
@@ -208,6 +208,7 @@ list_of_genes_bryce_regex <- paste0(list_of_genes_bryce, collapse = "|")
 df_all$custom <- ifelse(grepl(list_of_genes_bryce_regex, df_all$Gene.Names), "Custom", NA)
 
 ## Need to compare this to the top hits of other experiment. Correlation? LogFC to control on x and y axis? 
+## This is a shared folder from Pierre Beltran
 df_og <- read.table("./tl1a/output/tl1a_tnfa_followup/tl1a_tnfa_phosphoproteomics_dea.txt", sep = "\t", na.strings = c("NULL", "NaN", "NA"), header = T)
 df_og$Protein <- gsub("\\|.*$", "", df_og$ptm_sites)
 df_og$PTM <- gsub("_p", "_", df_og$Protein)
